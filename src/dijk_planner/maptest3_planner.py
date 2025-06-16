@@ -23,7 +23,10 @@ CACHE  = HERE / "planner_cache.pkl"       # memoised dijkstra results
 SCALE  = 4                                # pixels per cell in render
 
 yaml_meta = yaml.safe_load((MAPDIR / "maptest3.yaml").read_text())
-pgm_img   = Image.open(MAPDIR / yaml_meta["image"]).convert("L")
+img_path = Path(meta["image"])
+if not img_path.is_absolute():
+    img_path = MAP_DIR / img_path
+img = Image.open(img_path).convert("L")
 
 occ_thr = yaml_meta.get("occupied_thresh", .65) * 255
 grid    = (np.asarray(pgm_img) > occ_thr).astype(np.uint8)   # 1 = free
