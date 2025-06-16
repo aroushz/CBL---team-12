@@ -15,11 +15,12 @@ from pathlib import Path
 import numpy as np
 import yaml
 from PIL import Image, ImageDraw
+from importlib import resources   # std‑lib, no extra dep
 
 # ───────────────────────── locate repo & map dir ──────────────────────────
 HERE       = Path(__file__).resolve()
 REPO_ROOT  = next(p for p in HERE.parents if (p / "maps").is_dir())
-MAP_DIR    = REPO_ROOT / "maps"                 # …/team12/maps
+MAP_DIR    = resources.files(__package__) / "maps" # …/team12/maps
 CACHE_FILE = REPO_ROOT / ".planner_cache.pkl"   # shared cache
 
 META_YAML  = MAP_DIR / "maptest3.yaml"
