@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
+# maptest3_planner.py
 #
-# Quick path‑planner demo for the maptest3 map.
-# Call it in a docker shell like:
-#   python3 maptest3_planner.py
-# …then enter start / goal grid‑coordinates in the prompt.
+# A minimal Dijkstra path‑planner for the map stored in
+#   <repo root>/maps/maptest3.yaml / .pgm
+#
+# Usage (inside the ros2‑dev container):
+#   python3 maptest3_planner.py  x0  y0  x1  y1
 
 import argparse
 import pickle
@@ -14,27 +16,24 @@ import numpy as np
 import yaml
 from PIL import Image, ImageDraw
 
-# -----------------------------------------------------------------------------
-# files & constants
-# -----------------------------------------------------------------------------
-HERE   = Path(__file__).parent
-MAPDIR = HERE / "maps"                    # maptest3.{yaml,pgm} live here
-CACHE  = HERE / "planner_cache.pkl"       # memoised dijkstra results
-SCALE  = 4                                # pixels per cell in render
+# ───────────────────────── locate repo & map dir ──────────────────────────
+HERE       = Path(__file__).resolve()
+REPO_ROOT  = next(p for p in HERE.parents if (p / "maps").is_dir())
+MAP_DIR    = REPO_ROOT / "maps"                 # …/team12/maps
+CACHE_FILE = REPO_ROOT / ".planner_cache.pkl"   # shared cache
 
-yaml_meta = yaml.safe_load((MAPDIR / "maptest3.yaml").read_text())
-img_path = Path(meta["image"])
-if not img_path.is_absolute():
-    img_path = MAP_DIR / img_path
-img = Image.open(img_path).convert("L")
+META_YAML  = MAP_DIR / "maptest3.yaml"
+SCALE      = 4                                  # px per grid cell
 
-occ_thr = yaml_meta.get("occupied_thresh", .65) * 255
-grid    = (np.asarray(pgm_img) > occ_thr).astype(np.uint8)   # 1 = free
-H, W    = grid.shape
+# ───────────────────────── load map & build graph ─────────────────────────
+meta = yaml.safe_load(META_YAML.read_text())
+img_path = MAP_DIR / Path(meta["image"]).name    # image may be abs. in YAML
+img      = Image.open(img_path).convert("L")
 
-# -----------------------------------------------------------------------------
-# build 4‑connected graph of free cells
-# -----------------------------------------------------------------------------
+grid = (np.asarray(img) >
+        meta.get("occupied_thresh", .65) * 255).astype(np.uint8)
+H, W = grid.shape
+
 graph = {}
 for y in range(H):
     for x in range(W):
@@ -47,110 +46,70 @@ for y in range(H):
                 nbrs.append(((nx, ny), 1))
         graph[(x, y)] = nbrs
 
-# -----------------------------------------------------------------------------
-# small dijkstra helper
-# -----------------------------------------------------------------------------
-def dijkstra(src, g):
-    dist = {v: float("inf") for v in g}
-    path = {v: [] for v in g}
-    dist[src] = 0
-
-    to_visit = set(g)
-    while to_visit:
-        cur = min(to_visit, key=lambda v: dist[v])
-        to_visit.remove(cur)
-
-        for nxt, w in g[cur]:
-            alt = dist[cur] + w
-            if alt < dist[nxt]:
-                dist[nxt] = alt
-                path[nxt] = path[cur] + [(cur, nxt)]
-    return {v: {"dist": dist[v], "path": path[v]} for v in g}
-
-# -----------------------------------------------------------------------------
-# memoised solve()
-# -----------------------------------------------------------------------------
+# ──────────────────────────── tiny cache layer ────────────────────────────
 try:
-    memo = pickle.loads(CACHE.read_bytes())
+    memo = pickle.loads(CACHE_FILE.read_bytes())
 except FileNotFoundError:
     memo = {}
 
+def save_cache() -> None:
+    CACHE_FILE.write_bytes(pickle.dumps(memo))
 
-def solve(a, b):
-    key = (a, b)
+# ───────────────────────────── Dijkstra import ────────────────────────────
+# re‑use your existing implementation
+from dijk import dijk
+
+def shortest(start, goal):
+    key = (start, goal)
     if key not in memo:
-        memo[key] = dijkstra(a, graph)[b]["dist"], dijkstra(a, graph)[b]["path"]
-        CACHE.write_bytes(pickle.dumps(memo))
+        res = dijk(start, graph)[goal]
+        memo[key] = res["Distance"], res["Path"]
+        save_cache()
     return memo[key]
 
+# ────────────────────────────── rendering help ────────────────────────────
+def draw_path(path, start, goal) -> Path:
+    img = Image.new("RGB", (W * SCALE, H * SCALE), "white")
+    drw = ImageDraw.Draw(img)
 
-# -----------------------------------------------------------------------------
-# pretty render
-# -----------------------------------------------------------------------------
-def render(path_edges, start, goal):
-    out = Image.new("RGB", (W * SCALE, H * SCALE), "white")
-    drw = ImageDraw.Draw(out)
-
-    # draw walls
+    # obstacles
     ys, xs = np.where(grid == 0)
     for y, x in zip(ys, xs):
-        drw.rectangle(
-            [(x * SCALE, y * SCALE), ((x + 1) * SCALE - 1, (y + 1) * SCALE - 1)],
-            fill="black",
-        )
+        drw.rectangle([(x*SCALE, y*SCALE),
+                       ((x+1)*SCALE-1, (y+1)*SCALE-1)], fill="black")
 
-    # draw the path
-    for (x0, y0), (x1, y1) in path_edges:
-        drw.line(
-            [
-                (x0 * SCALE + SCALE // 2, y0 * SCALE + SCALE // 2),
-                (x1 * SCALE + SCALE // 2, y1 * SCALE + SCALE // 2),
-            ],
-            fill="red",
-            width=SCALE // 2,
-        )
+    # the path
+    for (x0, y0), (x1, y1) in path:
+        drw.line([(x0*SCALE+SCALE//2, y0*SCALE+SCALE//2),
+                  (x1*SCALE+SCALE//2, y1*SCALE+SCALE//2)],
+                 fill="red", width=SCALE//2)
 
-    # start / goal dots
-    for (x, y), col in ((start, "green"), (goal, "blue")):
-        drw.ellipse(
-            [(x * SCALE + 1, y * SCALE + 1), ((x + 1) * SCALE - 2, (y + 1) * SCALE - 2)],
-            fill=col,
-        )
+    # start / goal markers
+    for (x, y), colour in ((start, "green"), (goal, "blue")):
+        drw.ellipse([(x*SCALE+1, y*SCALE+1),
+                     ((x+1)*SCALE-2, (y+1)*SCALE-2)],
+                    fill=colour)
 
-    name = f"maptest3_{start[0]}_{start[1]}_{goal[0]}_{goal[1]}.png"
-    out.save(name)
-    return name
+    fn = REPO_ROOT / f"maptest3_{start[0]}_{start[1]}_{goal[0]}_{goal[1]}.png"
+    img.save(fn)
+    return fn
 
-
-# -----------------------------------------------------------------------------
-# mini‑REPL
-# -----------------------------------------------------------------------------
+# ─────────────────────────────── CLI entry ────────────────────────────────
 def main():
-    print("maptest3 planner – give four ints: x0 y0  x1 y1   (blank to quit)")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("x0", type=int)
+    ap.add_argument("y0", type=int)
+    ap.add_argument("x1", type=int)
+    ap.add_argument("y1", type=int)
+    a  = ap.parse_args()
 
-    while True:
-        try:
-            line = input("> ").strip()
-        except EOFError:
-            break
-        if not line or line.lower() in {"q", "quit", "exit"}:
-            break
+    start, goal = (a.x0, a.y0), (a.x1, a.y1)
+    if start not in graph or goal not in graph:
+        sys.exit("start or goal lies on an obstacle ‑ pick free cells")
 
-        try:
-            x0, y0, x1, y1 = map(int, line.split())
-        except ValueError:
-            print("need exactly 4 integers")
-            continue
-
-        start, goal = (x0, y0), (x1, y1)
-        if start not in graph or goal not in graph:
-            print("start/goal not on a free cell – try again")
-            continue
-
-        dist, edges = solve(start, goal)
-        png = render(edges, start, goal)
-        print(f"distance {dist}  steps {len(edges)}  -> {png}")
-
+    dist, path = shortest(start, goal)
+    png = draw_path(path, start, goal)
+    print(f"distance {dist}  steps {len(path)}  -> {png.name}")
 
 if __name__ == "__main__":
     main()
